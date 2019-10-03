@@ -1,0 +1,8 @@
+.env
+__pycache__
+.vscode
+*egg-info/
+build/
+dist/
+squacapi_migrate
+.flake8
