@@ -1,3 +1,4 @@
 squacapipy
 psycopg2-binary
 flake8
+requests

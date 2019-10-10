@@ -129,7 +129,8 @@ parser = argparse.ArgumentParser(
     usage="""source .env && python migrate_measurements.py
             --networks=CC,UW,UO
             --metrics=snr20_0p34cmHP,snr20_0p34cmHP,pctavailable,ngaps
-            --endtime=[YYYY-mm-dd]""")
+            --starttime=YYYY-mm-dd
+            --endtime=YYYY-mm-dd""")
 
 parser.add_argument('--networks', required=True,
                     help="Comma seperated list of networks")

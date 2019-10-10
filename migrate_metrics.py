@@ -83,7 +83,6 @@ try:
     # print(payloads)
     for p in payloads:
         m = Metric().post(p)
-        print(m)
 except psycopg2.Error as error:
     print("Error connecting to station_mentrics DB. Error: {}".format(error))
 finally:
