@@ -79,14 +79,12 @@ try:
     metrics = cursor.fetchall()
     payloads = []
     for m in metrics:
+        payloads.append(make_metric_payload(m))
+    for p in payloads:
+        m = Metric().post(p)
         if m.status_code != 201:
             print(m.status_code)
             print(m.body)
-        else:
-            payloads.append(make_metric_payload(m))
-    # print(payloads)
-    for p in payloads:
-        m = Metric().post(p)
 except psycopg2.Error as error:
     print("Error connecting to station_mentrics DB. Error: {}".format(error))
 finally:
