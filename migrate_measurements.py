@@ -2,7 +2,7 @@ import os
 import psycopg2
 import psycopg2.extras
 from squacapipy.squacapi import Metric, Channel, Network, Measurement
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import argparse
 
@@ -23,6 +23,13 @@ squacapipy
 
 To run:
  See usage
+
+    in cron
+        /bin/bash -l -c 'cd /home/deploy/squacapi_migrate &&
+        source .env && time /var/.virtualenvs/squacapi_migrate/bin/python
+        migrate_measurements.py --networks=CC,UW,UO
+        --metrics=RMSduration_0p07cm,snr20_0p34cmHP,pctavailable,ngaps >>
+        /var/log/pnsn_web/cron.log 2>&1'
 
 Desired metrics
 metric_name             metric_id    threshold (per hour)
@@ -124,102 +131,126 @@ def make_measurement_payload(row, lookup):
     return payload
 
 
-parser = argparse.ArgumentParser(
-    description="""Migrate station_metrics db measurements into squac db""",
-    usage="""source .env && python migrate_measurements.py
-            --networks=CC,UW,UO
-            --metrics=snr20_0p34cmHP,snr20_0p34cmHP,pctavailable,ngaps
-            --starttime=YYYY-mm-dd
-            --endtime=YYYY-mm-dd""")
+def main():
+    parser = argparse.ArgumentParser(
+        description="""Migrate station_metrics db measurements into squac db""",
+        usage="""source .env && python migrate_measurements.py
+                --networks=CC,UW,UO
+                --metrics=snr20_0p34cmHP,snr20_0p34cmHP,pctavailable,ngaps
+                --starttime=YYYY-mm-dd
+                --endtime=YYYY-mm-dd""")
 
-parser.add_argument('--networks', required=True,
-                    help="Comma seperated list of networks")
-parser.add_argument('--metrics', required=True,
-                    help="Comma seperated list of metrics")
-parser.add_argument('--starttime', required=True,
-                    help="metrics created at and after, inclusive")
-parser.add_argument('--endtime', required=True,
-                    help="metrics created beforem exclusive")                    
-args = parser.parse_args()
-
-
-networks_tup = tuple(n.upper() for n in args.networks.split(","))
-metrics_tup = tuple(m for m in args.metrics.split(","))
-print(networks_tup)
-print(metrics_tup)
-
-year, month, day = args.starttime.split("-")
-starttime = datetime(int(year), int(month), int(day), tzinfo=pytz.UTC)
-year, month, day = args.endtime.split("-")
-endtime = datetime(int(year), int(month), int(day), tzinfo=pytz.UTC)
-nets_squac = Network().get(network=args.networks.lower())
-if nets_squac.status_code != 200:
-    print('Error {}'.format(nets_squac.body))
-
-metrics = Metric().get(
-    name=args.metrics)
-# create hash of unique keys for quick lookup
-lookup = {}
-for m in metrics.body:
-    key = m['name']
-    lookup[key] = m['id']
-cursor = None
-try:
-    connection = psycopg2.connect(dbname=DB_NAME,
-                                  user=DB_USER,
-                                  password=DB_PASSWD,
-                                  host=DB_HOST)
-
-    # use DictCursor to access by column name
-    cursor = connection.cursor()
-    sql_query = '''SELECT
-                        m.*,
-                        s.net as net,
-                        s.sta as sta,
-                        s.loc as loc,
-                        s.chan as chan,
-                        metrics.metric as metric
-                    FROM measurements m
-                    JOIN sncls s ON s.id = m.sncl_id
-                    JOIN metrics  ON metrics.id = m.metric_id
-                    WHERE s.net IN %s
-                    AND metrics.metric IN %s
-                    AND m.starttime >= %s
-                    AND m.starttime < %s;
-                '''
-
-    cursor.execute(sql_query, (networks_tup, metrics_tup, starttime, endtime))
-    # print(cursor.query)
-    measurements = cursor.fetchall()
-    payloads = []
-    for m in measurements:
-        payload = make_measurement_payload(m, lookup)
-        if payload:
-            payloads.append(payload)
-    if len(payload) > 0:
-        # slice payloads into 100's
-        slicey = 100
-        end = slicey
-        start = 0
-        while start < len(payloads):
-            collection = payloads[start:end]
-            m = Measurement().post(collection)
-            if m.status_code != 201:
-                print("Error {} on bulk post".format(m.status_code))
-                print(m.body[0])
-                print("Trying single posts...")
-                for p in collection:
-                    m = Measurement().post(p)
-                    if m.status_code != 201:
-                        print("Error {} on single post".format(m.status_code))
-                        print(m.body)
-            start += slicey
-            end += slicey
+    parser.add_argument('--networks', required=True,
+                        help="Comma seperated list of networks")
+    parser.add_argument('--metrics', required=True,
+                        help="Comma seperated list of metrics")
+    parser.add_argument('--starttime',
+                        help="metrics created at and after, inclusive")
+    parser.add_argument('--endtime',
+                        help="metrics created beforem exclusive")
+    args = parser.parse_args()
 
 
-except psycopg2.Error as error:
-    print("Error connecting to station_mentrics DB. Error: {}".format(error))
-finally:
-    if(cursor):
-        cursor.close()
-        connection.close()
+    networks_tup = tuple(n.upper() for n in args.networks.split(","))
+    metrics_tup = tuple(m for m in args.metrics.split(","))
+   
+    ''' if starttime and endtime are missing find most recent measurement in db
+        set to start then query everything to datetime.now()
+    '''
+    if args.starttime is None and args.endtime is None:
+        # default to read last day
+        endtime = datetime.now()
+        delta = timedelta(days=1)
+        starttime = endtime - delta
+        f = open("recent_created_at.txt", 'r+')
+        recent_created_at = f.read()
+        if len(recent_created_at) > 0:
+            endtime = datetime.strptime(recent_created_at,
+                                        '%Y-%m-%d %H:%M:%S')
+
+        print(starttime)
+        print(endtime)
+    else:
+        year, month, day = args.starttime.split("-")
+        starttime = datetime(int(year), int(month), int(day), tzinfo=pytz.UTC)
+        year, month, day = args.endtime.split("-")
+        endtime = datetime(int(year), int(month), int(day), tzinfo=pytz.UTC)
+
+    nets_squac = Network().get(network=args.networks.lower())
+    if nets_squac.status_code != 200:
+        print('Error {}'.format(nets_squac.body))
+
+    metrics = Metric().get(
+        name=args.metrics)
+    # create hash of unique keys for quick lookup
+    lookup = {}
+    for m in metrics.body:
+        key = m['name']
+        lookup[key] = m['id']
+    cursor = None
+    try:
+        connection = psycopg2.connect(dbname=DB_NAME,
+                                      user=DB_USER,
+                                      password=DB_PASSWD,
+                                      host=DB_HOST)
+
+        # use DictCursor to access by column name
+        cursor = connection.cursor()
+        sql_query = '''SELECT
+                            m.*,
+                            s.net as net,
+                            s.sta as sta,
+                            s.loc as loc,
+                            s.chan as chan,
+                            metrics.metric as metric
+                        FROM measurements m
+                        JOIN sncls s ON s.id = m.sncl_id
+                        JOIN metrics  ON metrics.id = m.metric_id
+                        WHERE s.net IN %s
+                        AND metrics.metric IN %s
+                        AND m.starttime >= %s
+                        AND m.starttime < %s
+                        ORDER BY m.created_at DESC;
+                    '''
+        cursor.execute(sql_query, (networks_tup, metrics_tup, starttime,
+                                   endtime))
+        measurements = cursor.fetchall()
+        payloads = []
+        # these are ordered asc, track the morst recent created_at
+        recent_created_at = measurements[0][7]
+        f = open("recent_created_at.txt", 'w')
+        f.write(str(recent_created_at))
+        for m in measurements:
+            payload = make_measurement_payload(m, lookup)
+            if payload:
+                payloads.append(payload)
+        if len(payload) > 0:
+            # slice payloads into 100's
+            slicey = 100
+            end = slicey
+            start = 0
+            while start < len(payloads):
+                collection = payloads[start:end]
+                m = Measurement().post(collection)
+                if m.status_code != 201:
+                    print("Error {} on bulk post".format(m.status_code))
+                    print(m.body[0])
+                    print("Trying single posts...")
+                    for p in collection:
+                        m = Measurement().post(p)
+                        if m.status_code != 201:
+                            next()
+
+                start += slicey
+                end += slicey
+
+    except psycopg2.Error as error:
+        print("Error connecting to station_mentrics DB. Error: {}".format(error))
+    finally:
+        if(cursor):
+            cursor.close()
+            connection.close()
+
+
+if __name__ == "__main__":
+    main()
