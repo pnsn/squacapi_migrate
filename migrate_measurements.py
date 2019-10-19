@@ -150,7 +150,6 @@ def main():
                         help="metrics created beforem exclusive")
     args = parser.parse_args()
 
-
     networks_tup = tuple(n.upper() for n in args.networks.split(","))
     metrics_tup = tuple(m for m in args.metrics.split(","))
 
@@ -251,7 +250,7 @@ def main():
                 payloads.append(payload)
         if len(payload) > 0:
             # slice payloads into 100's
-            slicey = 10
+            slicey = 100
             end = slicey
             start = 0
             while start < len(payloads):
