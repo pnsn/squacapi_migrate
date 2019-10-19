@@ -133,7 +133,7 @@ def make_measurement_payload(row, lookup):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="""Migrate station_metrics db measurements into squac db""",
+        description="""Migrate station_metrics db measurements to squac db""",
         usage="""source .env && python migrate_measurements.py
                 --networks=CC,UW,UO
                 --metrics=snr20_0p34cmHP,snr20_0p34cmHP,pctavailable,ngaps
@@ -153,23 +153,24 @@ def main():
 
     networks_tup = tuple(n.upper() for n in args.networks.split(","))
     metrics_tup = tuple(m for m in args.metrics.split(","))
-   
-    ''' if starttime and endtime are missing find most recent measurement in db
-        set to start then query everything to datetime.now()
+
+    ''' if starttime and endtime are missing find most recent by id and start
+        there
     '''
     if args.starttime is None and args.endtime is None:
-        # default to read last day
-        endtime = datetime.now()
-        delta = timedelta(days=1)
-        starttime = endtime - delta
-        f = open("recent_created_at.txt", 'r+')
-        recent_created_at = f.read()
-        if len(recent_created_at) > 0:
-            endtime = datetime.strptime(recent_created_at,
-                                        '%Y-%m-%d %H:%M:%S')
+        f = open("recent_id.txt", 'r+')
+        last_written_id = f.read()
+        # is there anything in file? If not then query one day back
+        if len(last_written_id) > 0:
+            last_written_id = int(last_written_id)
+            starttime = None
+            endtime = None
+        else:
+            # default to read last  day
+            endtime = datetime.now()
+            delta = timedelta(days=1)
+            starttime = endtime - delta
 
-        print(starttime)
-        print(endtime)
     else:
         year, month, day = args.starttime.split("-")
         starttime = datetime(int(year), int(month), int(day), tzinfo=pytz.UTC)
@@ -184,6 +185,7 @@ def main():
         name=args.metrics)
     # create hash of unique keys for quick lookup
     lookup = {}
+    print(metrics)
     for m in metrics.body:
         key = m['name']
         lookup[key] = m['id']
@@ -196,7 +198,7 @@ def main():
 
         # use DictCursor to access by column name
         cursor = connection.cursor()
-        sql_query = '''SELECT
+        sql_by_date = '''SELECT
                             m.*,
                             s.net as net,
                             s.sta as sta,
@@ -210,28 +212,52 @@ def main():
                         AND metrics.metric IN %s
                         AND m.starttime >= %s
                         AND m.starttime < %s
-                        ORDER BY m.created_at DESC;
+                        ORDER BY m.id desc;
                     '''
-        cursor.execute(sql_query, (networks_tup, metrics_tup, starttime,
-                                   endtime))
+
+        sql_by_id = '''SELECT
+                            m.*,
+                            s.net as net,
+                            s.sta as sta,
+                            s.loc as loc,
+                            s.chan as chan,
+                            metrics.metric as metric
+                        FROM measurements m
+                        JOIN sncls s ON s.id = m.sncl_id
+                        JOIN metrics  ON metrics.id = m.metric_id
+                        WHERE s.net IN %s
+                        AND metrics.metric IN %s
+                        AND m.id > %s
+                        ORDER BY m.id;
+                    '''
+        if starttime is None and endtime is None:
+            cursor.execute(sql_by_id, (networks_tup, metrics_tup,
+                           last_written_id))
+        else:
+            cursor.execute(sql_by_date, (networks_tup, metrics_tup, starttime,
+                           endtime))
         measurements = cursor.fetchall()
         payloads = []
         # these are ordered asc, track the morst recent created_at
-        recent_created_at = measurements[0][7]
-        f = open("recent_created_at.txt", 'w')
-        f.write(str(recent_created_at))
+        if len(measurements) == 0:
+            print("nothing new fuck this...")
+            exit(1)
+        recent_id = measurements[-1][0]
+        f = open("recent_id.txt", 'w')
+        f.write(str(recent_id))
         for m in measurements:
             payload = make_measurement_payload(m, lookup)
             if payload:
                 payloads.append(payload)
         if len(payload) > 0:
             # slice payloads into 100's
-            slicey = 100
+            slicey = 10
             end = slicey
             start = 0
             while start < len(payloads):
                 collection = payloads[start:end]
                 m = Measurement().post(collection)
+
                 if m.status_code != 201:
                     print("Error {} on bulk post".format(m.status_code))
                     print(m.body[0])
