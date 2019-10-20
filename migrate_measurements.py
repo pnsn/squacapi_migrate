@@ -38,6 +38,23 @@ RMSduration_0p07cm      110             60
 pctavailable            77              98%
 ngaps                   78              1
 
+Should get about 43k/day
+
+    station_metrics=# select count(*) from measurements m
+    join sncls s on s.id = m.sncl_id
+    join metrics met on met.id = m.metric_id
+    where s.net in ('UW','UO','CC') and m.starttime >= '2019-10-10'
+    and m.starttime < '2019-10-11'
+    and met.metric in
+    ('ngaps', 'RMSduration_0p07cm','snr20_0p34cmHP','pctavailable');
+
+    count
+    -------
+    43228
+    (1 row)
+    427/day if using CC and ngaps only
+
+
 Source tables in station_metric dbs
    Column   |            Type             |           Modifiers
 ------------+-----------------------------+---------------------------------
@@ -158,10 +175,10 @@ def main():
     '''
     if args.starttime is None and args.endtime is None:
         f = open("recent_id.txt", 'r+')
-        last_written_id = f.read()
+        recent_id = f.read()
         # is there anything in file? If not then query one day back
-        if len(last_written_id) > 0:
-            last_written_id = int(last_written_id)
+        if len(recent_id) > 0:
+            # recent_id = recent_id
             starttime = None
             endtime = None
         else:
@@ -184,7 +201,6 @@ def main():
         name=args.metrics)
     # create hash of unique keys for quick lookup
     lookup = {}
-    print(metrics)
     for m in metrics.body:
         key = m['name']
         lookup[key] = m['id']
@@ -211,7 +227,7 @@ def main():
                         AND metrics.metric IN %s
                         AND m.starttime >= %s
                         AND m.starttime < %s
-                        ORDER BY m.id desc;
+                        ORDER BY m.id;
                     '''
 
         sql_by_id = '''SELECT
@@ -231,19 +247,22 @@ def main():
                     '''
         if starttime is None and endtime is None:
             cursor.execute(sql_by_id, (networks_tup, metrics_tup,
-                           last_written_id))
+                           recent_id))
+            print(sql_by_id, (networks_tup, metrics_tup, int(recent_id)))
         else:
             cursor.execute(sql_by_date, (networks_tup, metrics_tup, starttime,
                            endtime))
+            print(sql_by_date, (networks_tup, metrics_tup, starttime, endtime))
         measurements = cursor.fetchall()
         payloads = []
         # these are ordered asc, track the morst recent created_at
         if len(measurements) == 0:
             print("nothing new fuck this...")
-            exit(1)
         recent_id = measurements[-1][0]
         f = open("recent_id.txt", 'w')
         f.write(str(recent_id))
+        exit(1)
+
         for m in measurements:
             payload = make_measurement_payload(m, lookup)
             if payload:
